@@ -1,15 +1,18 @@
+version: '3.8'
+
 services:
-  db:
-    image: mysql:8.0
-    container_name: undoschool-db
-    restart: unless-stopped
+  mysql:
+    image: mysql:8
+    container_name: undoschool_mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${DB_NAME}
       MYSQL_USER: ${DB_USER}
       MYSQL_PASSWORD: ${DB_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -18,18 +21,15 @@ services:
 
   app:
     build: .
-    container_name: undoschool-app
-    restart: unless-stopped
+    container_name: undoschool_app
     ports:
       - "8080:8080"
-    environment:
-      DB_HOST: db
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
+    env_file:
+      - .env
     depends_on:
-      db:
+      mysql:
         condition: service_healthy
+    restart: on-failure
 
 volumes:
   mysql_data:
