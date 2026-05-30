@@ -1,359 +1,359 @@
-# UndoSchool Backend
+# UndoSchool Booking System
 
-UndoSchool Backend is a production-style REST API built using Spring Boot for managing teachers, parents, sessions, and bookings in an online learning platform.
-
-The project focuses on clean backend architecture, booking conflict validation, Dockerized deployment, and cloud-native development practices.
-
----
-
-# Live Deployment
-
-https://undoschool-backend.onrender.com/
-
-## Swagger API Documentation
-
-https://undoschool-backend.onrender.com/swagger-ui/index.html
+Production-ready backend for a **global live-learning platform** where teachers
+conduct online classes for students across different countries and timezones.
 
 ---
 
-# Tech Stack
-
-| Technology | Purpose |
-|------------|----------|
-| Spring Boot 3 | Backend Framework |
-| Java 21 | Programming Language |
-| Spring Data JPA | ORM Framework |
-| MySQL / TiDB | Relational Database |
-| Docker | Containerization |
-| Render | Cloud Deployment |
-| Swagger / OpenAPI | API Documentation |
-| Maven | Dependency Management |
-
----
-
-# Features
-
-## Teacher Management
-- Create teacher
-- Update teacher details
-- Delete teacher
-- Fetch teacher information
-
-## Parent Management
-- Register parent
-- Fetch parent details
-- Manage parent profiles
-
-## Session Management
-- Create sessions
-- Manage session schedules
-- Associate sessions with teachers
-
-## Booking Management
-- Create bookings
-- Prevent overlapping bookings
-- Validate booking schedules
-
-## Exception Handling
-- Global exception handling
-- Structured API error responses
-
-## Validation
-- DTO validation
-- Request body validation
-- Input constraints
-
-## API Documentation
-- Swagger/OpenAPI integration
-- Interactive API testing
+## Table of Contents
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Database Design](#database-design)
+- [API Reference](#api-reference)
+- [Timezone Handling](#timezone-handling)
+- [Booking Rules & Concurrency](#booking-rules--concurrency)
+- [Running Locally](#running-locally)
+- [Running with Docker](#running-with-docker)
+- [Environment Variables](#environment-variables)
+- [Testing](#testing)
 
 ---
 
-# Project Architecture
+## Architecture
 
-```text
-Client
-   ↓
-Controller Layer
-   ↓
-Service Layer
-   ↓
-Repository Layer
-   ↓
-MySQL / TiDB Database
+```
+┌─────────────────────────────────────────────────────┐
+│                  REST API Layer                      │
+│  TeacherController  │  ParentController  │  Courses  │
+├─────────────────────────────────────────────────────┤
+│                 Service Layer                        │
+│  OfferingService  │  BookingService  │  TimezoneUtil │
+├─────────────────────────────────────────────────────┤
+│               Repository Layer                       │
+│  TeacherRepo  │  SessionRepo  │  BookingRepo         │
+├─────────────────────────────────────────────────────┤
+│                   MySQL (UTC)                        │
+└─────────────────────────────────────────────────────┘
+```
+
+**Modular Monolith** — code is organized into independent modules:
+```
+com.undoschool/
+├── booking/        # Booking entity, service, repository, DTOs
+├── offering/       # Course + Offering entity, service, repository, DTOs
+├── session/        # Session entity, repository, DTOs
+├── teacher/        # Teacher entity, service, controller
+├── parent/         # Parent entity, service, controller
+├── util/           # TimezoneUtil, OverlapUtil
+├── exception/      # GlobalExceptionHandler, custom exceptions
+└── config/         # SwaggerConfig
 ```
 
 ---
 
-# Project Structure
+## Tech Stack
 
-```text
-src/main/java/com/undoschool/backend
-│
-├── booking
-├── teacher
-├── parent
-├── session
-├── config
-├── exception
-├── util
-└── common
-```
+| Layer | Technology |
+|-------|-----------|
+| Language | Java 21 |
+| Framework | Spring Boot 3.3.0 |
+| Persistence | Spring Data JPA + Hibernate |
+| Database | MySQL 8.0 |
+| Containerization | Docker + Docker Compose |
+| API Docs | SpringDoc OpenAPI (Swagger UI) |
+| Validation | Jakarta Validation |
 
 ---
 
-# Booking Conflict Logic
+## Database Design
 
-The system prevents overlapping bookings.
+### Entity Relationship
 
-Conflict condition:
-
-```text
-(newStart < existingEnd)
-AND
-(newEnd > existingStart)
+```
+Course (1) ──────< Offering (1) ──────< Session
+                       │
+                       └─────< Booking >───── Parent
+Teacher (1) ─────< Offering
 ```
 
-Example:
+### Tables
 
-```text
-Existing Booking:
-1:00 PM -------- 2:00 PM
+#### `courses`
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | Auto increment |
+| title | VARCHAR | NOT NULL |
+| description | VARCHAR | Nullable |
 
-New Booking:
-1:30 PM -------- 2:30 PM
+#### `teachers`
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | Auto increment |
+| name | VARCHAR | NOT NULL |
+| email | VARCHAR | UNIQUE, NOT NULL |
+| timezone | VARCHAR | IANA string e.g. `Asia/Kolkata` |
 
-→ Conflict Detected
-```
+#### `parents`
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | Auto increment |
+| name | VARCHAR | NOT NULL |
+| email | VARCHAR | UNIQUE, NOT NULL |
+| timezone | VARCHAR | IANA string e.g. `America/New_York` |
 
-This ensures teachers cannot have overlapping sessions.
+#### `offerings`
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | Auto increment |
+| course_id | BIGINT FK | → courses.id |
+| teacher_id | BIGINT FK | → teachers.id |
+| title | VARCHAR | NOT NULL |
+| description | VARCHAR | Nullable |
+| status | ENUM | DRAFT, ACTIVE, CANCELLED |
+
+#### `sessions`
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | Auto increment |
+| offering_id | BIGINT FK | → offerings.id |
+| start_time_utc | DATETIME(6) | Always stored as UTC |
+| end_time_utc | DATETIME(6) | Always stored as UTC |
+| sequence_no | INT | Optional ordering |
+
+**Indexes:** `(offering_id)`, `(start_time_utc, end_time_utc)`
+
+#### `bookings`
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGINT PK | Auto increment |
+| parent_id | BIGINT FK | → parents.id |
+| offering_id | BIGINT FK | → offerings.id |
+| status | ENUM | CONFIRMED, CANCELLED |
+| booked_at | DATETIME(6) | Auto-set on creation (UTC) |
+
+**Indexes:** `(parent_id)`, `(offering_id)`
 
 ---
 
-# API Base URL
+## API Reference
 
-```text
-https://undoschool-backend.onrender.com/api/v1
-```
+Base URL: `http://localhost:10000`
+Swagger UI: `http://localhost:10000/swagger-ui.html`
+OpenAPI JSON: `http://localhost:10000/api-docs`
 
----
-
-# Swagger Documentation
-
-Interactive Swagger/OpenAPI documentation:
-
-```text
-https://undoschool-backend.onrender.com/swagger-ui/index.html
-```
-
-Features available in Swagger:
-- API endpoint testing
-- Request/Response schemas
-- Validation details
-- API examples
-- Error response documentation
-
----
-
-# API Endpoints
-
-# Teacher APIs
-
+### Courses
 | Method | Endpoint | Description |
-|--------|-----------|-------------|
-| POST | /api/v1/teachers | Create teacher |
-| GET | /api/v1/teachers/{id} | Get teacher |
-| PUT | /api/v1/teachers/{id} | Update teacher |
-| DELETE | /api/v1/teachers/{id} | Delete teacher |
+|--------|----------|-------------|
+| POST | `/api/v1/courses` | Create a course |
+| GET | `/api/v1/courses` | List all courses |
 
----
-
-# Parent APIs
-
+### Teacher APIs
 | Method | Endpoint | Description |
-|--------|-----------|-------------|
-| POST | /api/v1/parents | Create parent |
-| GET | /api/v1/parents/{id} | Get parent |
+|--------|----------|-------------|
+| POST | `/api/v1/teachers` | Register a teacher |
+| POST | `/api/v1/teachers/offerings` | Create an offering |
+| POST | `/api/v1/teachers/offerings/{offeringId}/sessions` | Add sessions |
+| GET | `/api/v1/teachers/{teacherId}/offerings` | Get teacher's offerings |
 
----
-
-# Session APIs
-
+### Parent APIs
 | Method | Endpoint | Description |
-|--------|-----------|-------------|
-| POST | /api/v1/sessions | Create session |
-| GET | /api/v1/sessions | Get all sessions |
+|--------|----------|-------------|
+| POST | `/api/v1/parents` | Register a parent |
+| GET | `/api/v1/parents/offerings?timezone=` | Browse available offerings |
+| POST | `/api/v1/parents/bookings` | Book an offering |
+| GET | `/api/v1/parents/{parentId}/bookings` | Get parent's bookings |
 
----
+### HTTP Status Codes
+| Code | Meaning |
+|------|---------|
+| 200 | Success |
+| 201 | Created |
+| 400 | Validation failed |
+| 404 | Resource not found |
+| 409 | Booking conflict (overlap or duplicate) |
+| 500 | Internal server error |
 
-# Booking APIs
-
-| Method | Endpoint | Description |
-|--------|-----------|-------------|
-| POST | /api/v1/bookings | Create booking |
-| GET | /api/v1/bookings | Get all bookings |
-
----
-
-# Example Request
-
-## Create Booking
-
-```http
-POST /api/v1/bookings
-Content-Type: application/json
-```
-
+### Error Response Format
 ```json
 {
-  "parentId": 1,
-  "sessionId": 2,
-  "startTime": "2026-05-29T10:00:00",
-  "endTime": "2026-05-29T11:00:00"
-}
-```
-
----
-
-# Example Success Response
-
-```json
-{
-  "id": 10,
-  "status": "CONFIRMED",
-  "message": "Booking created successfully"
-}
-```
-
----
-
-# Example Error Response
-
-```json
-{
-  "timestamp": "2026-05-29T10:10:00",
   "status": 409,
-  "error": "Conflict",
-  "message": "Booking conflict detected"
+  "message": "Schedule conflict: session on 2025-06-07T08:30:00-04:00 overlaps with your existing booking on 2025-06-07T08:00:00-04:00",
+  "details": null,
+  "timestamp": "2025-06-07T12:30:00Z"
+}
+```
+
+For validation errors, `details` contains field-level messages:
+```json
+{
+  "status": 400,
+  "message": "Validation failed",
+  "details": {
+    "parentId": "parentId is required",
+    "offeringId": "offeringId is required"
+  },
+  "timestamp": "2025-06-07T12:30:00Z"
 }
 ```
 
 ---
 
-# Docker Support
+## Timezone Handling
 
-The application supports Dockerized deployment.
+### Rule: Store UTC, Convert at the Edges
 
-## Build Docker Image
-
-```bash
-docker build -t undoschool-backend .
+```
+Teacher Input          Backend                  DB Storage
+──────────────         ─────────────────────    ──────────────────────
+"2025-06-07T18:00"  →  LocalDateTime.parse()  →  2025-06-07T12:30:00Z
++ "Asia/Kolkata"    →  .atZone(IST)           →  (UTC Instant)
+                    →  .toInstant()
 ```
 
-## Run Docker Container
+```
+DB Storage             Backend                  Parent Response
+──────────────         ─────────────────────    ──────────────────────
+2025-06-07T12:30:00Z → .atZone(parentTimezone) → "2025-06-07T08:30:00-04:00"
+                     → ISO_OFFSET_DATE_TIME      (America/New_York)
+```
 
-```bash
-docker run -p 8080:8080 undoschool-backend
+### Why `Instant` for entity fields?
+- `Instant` has no timezone — always unambiguous UTC
+- `LocalDateTime` silently uses JVM timezone — causes bugs in production
+- `DATETIME(6)` with `hibernate.jdbc.time_zone=UTC` ensures correct storage
+
+### IANA Timezone Examples
+| Region | IANA String |
+|--------|-------------|
+| India | `Asia/Kolkata` |
+| USA East | `America/New_York` |
+| USA West | `America/Los_Angeles` |
+| UK | `Europe/London` |
+| Singapore | `Asia/Singapore` |
+| UAE | `Asia/Dubai` |
+| Japan | `Asia/Tokyo` |
+| Australia | `Australia/Sydney` |
+
+---
+
+## Booking Rules & Concurrency
+
+### Rule 1 — Offering-level Booking
+Booking one offering books **all its sessions** as a single atomic unit.
+
+### Rule 2 — Overlap Detection
+Uses Allen's interval overlap algorithm:
+```
+overlap = (start1 < end2) AND (end1 > start2)
+```
+Implemented as a JPQL query in `SessionRepository`:
+```java
+SELECT s FROM Session s
+JOIN Booking b ON b.offering.id = s.offering.id
+WHERE b.parent.id = :parentId
+  AND b.status = 'CONFIRMED'
+  AND s.startTimeUtc < :endTime
+  AND s.endTimeUtc   > :startTime
+```
+
+### Rule 3 — Concurrent Booking Safety
+```
+Thread 1 (Parent A books Offering 1)    Thread 2 (Parent A books Offering 2)
+────────────────────────────────────    ────────────────────────────────────
+BEGIN TRANSACTION
+SELECT * FROM parents                   BEGIN TRANSACTION
+  WHERE id = 1                          SELECT * FROM parents
+  FOR UPDATE  ← acquires lock             WHERE id = 1
+                                           FOR UPDATE  ← BLOCKED, waits
+Check overlap → none
+INSERT INTO bookings ...
+COMMIT  ← releases lock
+                                        ← unblocked, proceeds
+                                        Check overlap → CONFLICT FOUND
+                                        THROW BookingConflictException
+                                        ROLLBACK
 ```
 
 ---
 
-# Environment Variables
+## Running Locally
 
-Configure these environment variables before running the application:
-
-```env
-DB_HOST=
-DB_PORT=
-DB_NAME=
-DB_USER=
-DB_PASSWORD=
-```
-
----
-
-# Local Development Setup
-
-## Clone Repository
+### Prerequisites
+- Java 21+
+- MySQL 8.0 running locally
+- Maven 3.9+
 
 ```bash
-git clone https://github.com/logeshramesh05/undoschool_backend.git
-```
+# 1. Create database
+mysql -u root -p -e "CREATE DATABASE undoschool;"
 
-## Navigate to Project
+# 2. Set environment variables
+export DB_HOST=localhost
+export DB_PORT=3306
+export DB_NAME=undoschool
+export DB_USER=root
+export DB_PASSWORD=yourpassword
 
-```bash
-cd undoschool_backend
-```
-
-## Build Project
-
-```bash
-mvn clean install
-```
-
-## Run Application
-
-```bash
+# 3. Run
 mvn spring-boot:run
 ```
 
 ---
 
-# Deployment
+## Running with Docker
 
-The application is deployed using:
+```bash
+# Start everything (app + MySQL)
+docker compose up --build
 
-- Render for cloud hosting
-- Docker containerization
-- TiDB/MySQL cloud database
+# Stop
+docker compose down
 
-Deployment URL:
-
-```text
-https://undoschool-backend.onrender.com/
+# Stop and remove volumes (fresh DB)
+docker compose down -v
 ```
 
----
-
-# Future Improvements
-
-Planned future improvements:
-
-- JWT Authentication
-- Role-based Authorization
-- Pagination
-- Redis Caching
-- Integration Testing
-- CI/CD Pipelines
-- Monitoring & Logging
-- Rate Limiting
+App: `http://localhost:10000`
+Swagger: `http://localhost:10000/swagger-ui.html`
 
 ---
 
-# Development Highlights
+## Environment Variables
 
-This project demonstrates:
-
-- Layered backend architecture
-- REST API development
-- Booking conflict validation
-- Docker deployment
-- Cloud-native backend deployment
-- OpenAPI/Swagger documentation
-- Exception handling
-- DTO validation
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DB_HOST` | MySQL host | `db` (Docker) / `localhost` |
+| `DB_PORT` | MySQL port | `3306` |
+| `DB_NAME` | Database name | `undoschool` |
+| `DB_USER` | MySQL username | `root` |
+| `DB_PASSWORD` | MySQL password | `strongpassword` |
 
 ---
 
-# Author
+## Testing
 
-## Logesh Ramesh
+### Quick Test Flow (Swagger UI)
 
-GitHub:
-https://github.com/logeshramesh05
+```
+1. POST /api/v1/courses          → { "title": "Minecraft Coding" }
+2. POST /api/v1/teachers         → { "name": "Ravi", "email": "ravi@test.com", "timezone": "Asia/Kolkata" }
+3. POST /api/v1/parents          → { "name": "John", "email": "john@test.com", "timezone": "America/New_York" }
+4. POST /api/v1/teachers/offerings
+5. POST /api/v1/teachers/offerings/1/sessions  ← teacher submits IST times
+6. GET  /api/v1/parents/offerings?timezone=America/New_York  ← parent sees EST times ✅
+7. POST /api/v1/parents/bookings
+8. POST /api/v1/parents/bookings  ← same offering = 409 Conflict ✅
+```
 
-Project Repository:
-https://github.com/logeshramesh05/undoschool_backend
+### Timezone Verification
+Teacher creates session at `18:00 IST`:
+- DB stores: `12:30:00Z`
+- Parent (EST) sees: `08:30:00-04:00` ✅
+- Parent (SGT) sees: `20:30:00+08:00` ✅
 
----
+### Conflict Verification
+```
+Book Offering A: June 7, 6:00 PM - 7:00 PM IST
+Book Offering B: June 7, 6:30 PM - 7:30 PM IST  ← 409 Conflict ✅
+Book Offering C: June 7, 8:00 PM - 9:00 PM IST  ← 201 Created  ✅
+```
