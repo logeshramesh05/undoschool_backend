@@ -5,7 +5,20 @@ conduct online classes for students across different countries and timezones.
 
 ---
 
+## Live Demo
+
+| | URL |
+|---|---|
+| **API Base URL** | https://undoschool-backend.onrender.com |
+| **Swagger UI** | https://undoschool-backend.onrender.com/swagger-ui.html |
+| **OpenAPI JSON** | https://undoschool-backend.onrender.com/api-docs |
+
+
+
+---
+
 ## Table of Contents
+- [Live Demo](#-live-demo)
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
 - [Database Design](#database-design)
@@ -62,6 +75,7 @@ com.undoschool/
 | Containerization | Docker + Docker Compose |
 | API Docs | SpringDoc OpenAPI (Swagger UI) |
 | Validation | Jakarta Validation |
+| Deployment | Render |
 
 ---
 
@@ -137,9 +151,11 @@ Teacher (1) ─────< Offering
 
 ## API Reference
 
-Base URL: `http://localhost:10000`
-Swagger UI: `http://localhost:10000/swagger-ui.html`
-OpenAPI JSON: `http://localhost:10000/api-docs`
+| | Local | Live Link |
+|---|---|---|
+| **Base URL** | `http://localhost:10000` | `https://undoschool-backend.onrender.com` |
+| **Swagger UI** | `http://localhost:10000/swagger-ui.html` | `https://undoschool-backend.onrender.com/swagger-ui.html` |
+| **OpenAPI JSON** | `http://localhost:10000/api-docs` | `https://undoschool-backend.onrender.com/api-docs` |
 
 ### Courses
 | Method | Endpoint | Description |
@@ -334,26 +350,28 @@ Swagger: `http://localhost:10000/swagger-ui.html`
 
 ### Quick Test Flow (Swagger UI)
 
+Open: https://undoschool-backend.onrender.com/swagger-ui.html
+
 ```
 1. POST /api/v1/courses          → { "title": "Minecraft Coding" }
 2. POST /api/v1/teachers         → { "name": "Ravi", "email": "ravi@test.com", "timezone": "Asia/Kolkata" }
 3. POST /api/v1/parents          → { "name": "John", "email": "john@test.com", "timezone": "America/New_York" }
 4. POST /api/v1/teachers/offerings
 5. POST /api/v1/teachers/offerings/1/sessions  ← teacher submits IST times
-6. GET  /api/v1/parents/offerings?timezone=America/New_York  ← parent sees EST times ✅
+6. GET  /api/v1/parents/offerings?timezone=America/New_York  ← parent sees EST times 
 7. POST /api/v1/parents/bookings
-8. POST /api/v1/parents/bookings  ← same offering = 409 Conflict ✅
+8. POST /api/v1/parents/bookings  ← same offering = 409 Conflict 
 ```
 
 ### Timezone Verification
 Teacher creates session at `18:00 IST`:
 - DB stores: `12:30:00Z`
-- Parent (EST) sees: `08:30:00-04:00` ✅
-- Parent (SGT) sees: `20:30:00+08:00` ✅
+- Parent (EST) sees: `08:30:00-04:00` 
+- Parent (SGT) sees: `20:30:00+08:00` 
 
 ### Conflict Verification
 ```
 Book Offering A: June 7, 6:00 PM - 7:00 PM IST
-Book Offering B: June 7, 6:30 PM - 7:30 PM IST  ← 409 Conflict ✅
-Book Offering C: June 7, 8:00 PM - 9:00 PM IST  ← 201 Created  ✅
+Book Offering B: June 7, 6:30 PM - 7:30 PM IST  ← 409 Conflict 
+Book Offering C: June 7, 8:00 PM - 9:00 PM IST  ← 201 Created  
 ```
