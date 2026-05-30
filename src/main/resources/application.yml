@@ -20,3 +20,4 @@ springdoc:
 
   swagger-ui:
     path: /swagger-ui.html
+    supported-submit-methods: []
