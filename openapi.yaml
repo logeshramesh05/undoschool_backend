@@ -1,0 +1,801 @@
+openapi: 3.0.3
+
+info:
+  title: UndoSchool Booking System API
+  description: |
+    ## Overview
+    Backend service for a **global live-learning platform** where teachers
+    conduct online classes for students across different countries and timezones.
+
+    ## Core Concepts
+    | Concept | Description |
+    |---------|-------------|
+    | **Course** | A subject or topic (e.g. Minecraft Coding, Art Drawing) |
+    | **Offering** | A schedulable batch/section of a course (e.g. Saturday Batch) |
+    | **Session** | An individual class meeting within an offering |
+    | **Booking** | A parent's reservation of an entire offering |
+
+    ## Timezone Handling
+    - All timestamps are **stored internally as UTC**
+    - Teachers submit session times in **their own local timezone** (IANA format)
+    - Parents receive session times **converted to their local timezone**
+    - Use valid IANA timezone strings: `Asia/Kolkata`, `America/New_York`, `Asia/Singapore`
+
+    ## Booking Rules
+    1. Booking is at the **offering level** — booking one offering books all its sessions
+    2. A parent **cannot book overlapping sessions** across different offerings
+    3. Concurrent booking attempts are handled with **pessimistic locking**
+
+    ## Error Responses
+    All errors follow a consistent format:
+    ```json
+    {
+      "status": 409,
+      "message": "Schedule conflict: ...",
+      "details": null,
+      "timestamp": "2025-06-07T12:30:00Z"
+    }
+    ```
+  version: 1.0.0
+  contact:
+    name: UndoSchool Engineering
+    email: engineering@undoschool.com
+
+servers:
+  - url: http://localhost:10000
+    description: Local Development
+  - url: https://undoschool-app.onrender.com
+    description: Production (Render)
+
+tags:
+  - name: Courses
+    description: Create and list courses/subjects
+  - name: Teacher — Registration
+    description: Teacher account management
+  - name: Teacher — Offerings
+    description: Create offerings and manage sessions
+  - name: Parent — Registration
+    description: Parent account management
+  - name: Parent — Offerings
+    description: Browse available offerings
+  - name: Parent — Bookings
+    description: Book offerings and view booking history
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Courses ─────────────────────────────────────────────────────────────────
+  /api/v1/courses:
+    post:
+      tags: [Courses]
+      summary: Create a course
+      description: Creates a new course/subject that teachers can create offerings for.
+      operationId: createCourse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCourseRequest'
+            example:
+              title: "Minecraft Coding"
+              description: "Learn Java programming through Minecraft modding"
+      responses:
+        '201':
+          description: Course created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+              example:
+                id: 1
+                title: "Minecraft Coding"
+                description: "Learn Java programming through Minecraft modding"
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [Courses]
+      summary: List all courses
+      operationId: getCourses
+      responses:
+        '200':
+          description: List of all courses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Course'
+
+  # ── Teacher Registration ─────────────────────────────────────────────────────
+  /api/v1/teachers:
+    post:
+      tags: [Teacher — Registration]
+      summary: Register a teacher
+      description: |
+        Creates a new teacher account.
+        The `timezone` field must be a valid IANA timezone string.
+        This timezone is used as the **default** when interpreting session times
+        submitted by this teacher.
+      operationId: createTeacher
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeacherRequest'
+            example:
+              name: "Ravi Kumar"
+              email: "ravi@undoschool.com"
+              timezone: "Asia/Kolkata"
+      responses:
+        '201':
+          description: Teacher registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Teacher'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  # ── Teacher Offerings ────────────────────────────────────────────────────────
+  /api/v1/teachers/offerings:
+    post:
+      tags: [Teacher — Offerings]
+      summary: Create an offering
+      description: |
+        Creates a new offering (batch/section) under a course for a teacher.
+        An offering starts with `ACTIVE` status and has no sessions initially.
+        Sessions must be added separately via `POST /api/v1/teachers/offerings/{offeringId}/sessions`.
+      operationId: createOffering
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOfferingRequest'
+            example:
+              courseId: 1
+              teacherId: 1
+              title: "Saturday Batch"
+              description: "8-week Saturday morning batch"
+      responses:
+        '201':
+          description: Offering created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfferingResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/teachers/offerings/{offeringId}/sessions:
+    post:
+      tags: [Teacher — Offerings]
+      summary: Add sessions to an offering
+      description: |
+        Adds one or more sessions to an existing offering.
+
+        ### Timezone Conversion
+        The teacher submits session times in **their local timezone**.
+        The backend converts all times to **UTC** before saving to the database.
+
+        **Example:**
+        - Teacher is in `Asia/Kolkata` (IST = UTC+5:30)
+        - Teacher submits `startTime: "2025-06-07T18:00:00"`
+        - Stored in DB as: `2025-06-07T12:30:00Z` (UTC)
+
+        ### Sequence Numbers
+        `sequenceNo` is optional but recommended for ordering sessions
+        (e.g. Week 1, Week 2, ... Week 8).
+      operationId: addSessions
+      parameters:
+        - name: offeringId
+          in: path
+          required: true
+          description: ID of the offering to add sessions to
+          schema:
+            type: integer
+            format: int64
+            example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddSessionsRequest'
+            example:
+              timezone: "Asia/Kolkata"
+              sessions:
+                - startTime: "2025-06-07T18:00:00"
+                  endTime: "2025-06-07T19:00:00"
+                  sequenceNo: 1
+                - startTime: "2025-06-14T18:00:00"
+                  endTime: "2025-06-14T19:00:00"
+                  sequenceNo: 2
+                - startTime: "2025-06-21T18:00:00"
+                  endTime: "2025-06-21T19:00:00"
+                  sequenceNo: 3
+      responses:
+        '201':
+          description: Sessions added successfully. Times returned in the submitted timezone.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionResponse'
+              example:
+                - id: 1
+                  sequenceNo: 1
+                  startTime: "2025-06-07T18:00:00+05:30"
+                  endTime: "2025-06-07T19:00:00+05:30"
+                - id: 2
+                  sequenceNo: 2
+                  startTime: "2025-06-14T18:00:00+05:30"
+                  endTime: "2025-06-14T19:00:00+05:30"
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/teachers/{teacherId}/offerings:
+    get:
+      tags: [Teacher — Offerings]
+      summary: Get teacher's offerings
+      description: |
+        Returns all offerings created by a teacher, along with their sessions.
+        Session times are returned in the **teacher's own timezone**.
+      operationId: getTeacherOfferings
+      parameters:
+        - name: teacherId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            example: 1
+      responses:
+        '200':
+          description: List of offerings with sessions in teacher's timezone
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OfferingResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Parent Registration ──────────────────────────────────────────────────────
+  /api/v1/parents:
+    post:
+      tags: [Parent — Registration]
+      summary: Register a parent
+      description: |
+        Creates a new parent account.
+        The `timezone` field determines how session times are displayed to this parent.
+        Must be a valid IANA timezone string (e.g. `America/New_York`, `Asia/Singapore`).
+      operationId: createParent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateParentRequest'
+            example:
+              name: "John Smith"
+              email: "john@example.com"
+              timezone: "America/New_York"
+      responses:
+        '201':
+          description: Parent registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Parent'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+  # ── Parent Offerings ─────────────────────────────────────────────────────────
+  /api/v1/parents/offerings:
+    get:
+      tags: [Parent — Offerings]
+      summary: Browse available offerings
+      description: |
+        Returns all active offerings with their sessions.
+        Session times are automatically **converted to the viewer's local timezone**.
+
+        ### Timezone Conversion Example
+        A session stored as `2025-06-07T12:30:00Z` (UTC):
+        - Parent in `America/New_York` → `2025-06-07T08:30:00-04:00`
+        - Parent in `Asia/Singapore`   → `2025-06-07T20:30:00+08:00`
+        - Parent in `Asia/Kolkata`     → `2025-06-07T18:00:00+05:30`
+
+        Pass a valid IANA timezone string. Defaults to `UTC` if not provided.
+      operationId: getAvailableOfferings
+      parameters:
+        - name: timezone
+          in: query
+          required: false
+          description: |
+            IANA timezone string for the viewer.
+            Session times will be converted to this timezone in the response.
+          schema:
+            type: string
+            default: UTC
+            example: "America/New_York"
+      responses:
+        '200':
+          description: List of active offerings with sessions in the requested timezone
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OfferingResponse'
+              example:
+                - id: 1
+                  courseId: 1
+                  courseTitle: "Minecraft Coding"
+                  teacherId: 1
+                  teacherName: "Ravi Kumar"
+                  title: "Saturday Batch"
+                  description: "8-week Saturday morning batch"
+                  status: "ACTIVE"
+                  sessions:
+                    - id: 1
+                      sequenceNo: 1
+                      startTime: "2025-06-07T08:30:00-04:00"
+                      endTime: "2025-06-07T09:30:00-04:00"
+                    - id: 2
+                      sequenceNo: 2
+                      startTime: "2025-06-14T08:30:00-04:00"
+                      endTime: "2025-06-14T09:30:00-04:00"
+
+  # ── Parent Bookings ──────────────────────────────────────────────────────────
+  /api/v1/parents/bookings:
+    post:
+      tags: [Parent — Bookings]
+      summary: Book an offering
+      description: |
+        Books an entire offering for a parent. Booking one offering automatically
+        books **all sessions** belonging to that offering.
+
+        ### Validation Rules
+        1. **Duplicate check** — Parent cannot book the same offering twice
+        2. **Conflict check** — Parent cannot book an offering if ANY of its sessions
+           overlap with already-booked sessions
+        3. **Session check** — Offering must have at least one session before it can be booked
+
+        ### Overlap Detection
+        Uses Allen's interval overlap algorithm:
+        ```
+        overlap = (start1 < end2) AND (end1 > start2)
+        ```
+
+        ### Concurrency Safety
+        Uses **pessimistic locking** (`SELECT FOR UPDATE`) on the parent row to
+        prevent race conditions when the same parent submits concurrent booking requests.
+        Only one booking attempt proceeds at a time; others wait for the lock.
+
+        ### Error Responses
+        - `409 Conflict` — Schedule overlap with existing booking
+        - `409 Conflict` — Offering already booked by this parent
+        - `404 Not Found` — Parent or offering does not exist
+        - `422 Unprocessable` — Offering has no sessions
+      operationId: bookOffering
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookOfferingRequest'
+            example:
+              parentId: 1
+              offeringId: 1
+      responses:
+        '201':
+          description: |
+            Offering booked successfully.
+            Session times in the response are in the **parent's registered timezone**.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+              example:
+                id: 1
+                parentId: 1
+                offeringId: 1
+                offeringTitle: "Saturday Batch"
+                status: "CONFIRMED"
+                bookedAt: "2025-06-01T08:30:00-04:00"
+                sessions:
+                  - id: 1
+                    sequenceNo: 1
+                    startTime: "2025-06-07T08:30:00-04:00"
+                    endTime: "2025-06-07T09:30:00-04:00"
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            Booking conflict. Either the offering is already booked by this parent,
+            or one or more sessions overlap with an existing booking.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                alreadyBooked:
+                  summary: Offering already booked
+                  value:
+                    status: 409
+                    message: "You have already booked this offering."
+                    details: null
+                    timestamp: "2025-06-01T12:30:00Z"
+                scheduleConflict:
+                  summary: Schedule overlap
+                  value:
+                    status: 409
+                    message: "Schedule conflict: session on 2025-06-07T08:30:00-04:00 overlaps with your existing booking on 2025-06-07T08:00:00-04:00"
+                    details: null
+                    timestamp: "2025-06-01T12:30:00Z"
+
+  /api/v1/parents/{parentId}/bookings:
+    get:
+      tags: [Parent — Bookings]
+      summary: Get parent's bookings
+      description: |
+        Returns all confirmed bookings for a parent.
+        Session times are returned in the **parent's registered timezone**.
+      operationId: getParentBookings
+      parameters:
+        - name: parentId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            example: 1
+      responses:
+        '200':
+          description: List of confirmed bookings with sessions in parent's timezone
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookingResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
+components:
+
+  schemas:
+
+    # ── Request schemas ────────────────────────────────────────────────────────
+    CreateCourseRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          description: Name of the course
+          example: "Minecraft Coding"
+        description:
+          type: string
+          description: Optional description of the course
+          example: "Learn Java programming through Minecraft modding"
+
+    CreateTeacherRequest:
+      type: object
+      required: [name, email, timezone]
+      properties:
+        name:
+          type: string
+          description: Full name of the teacher
+          example: "Ravi Kumar"
+        email:
+          type: string
+          format: email
+          description: Unique email address
+          example: "ravi@undoschool.com"
+        timezone:
+          type: string
+          description: |
+            Valid IANA timezone string. Used to interpret session times
+            submitted by this teacher.
+          example: "Asia/Kolkata"
+
+    CreateParentRequest:
+      type: object
+      required: [name, email, timezone]
+      properties:
+        name:
+          type: string
+          description: Full name of the parent
+          example: "John Smith"
+        email:
+          type: string
+          format: email
+          description: Unique email address
+          example: "john@example.com"
+        timezone:
+          type: string
+          description: |
+            Valid IANA timezone string. Session times will be displayed
+            in this timezone for this parent.
+          example: "America/New_York"
+
+    CreateOfferingRequest:
+      type: object
+      required: [courseId, teacherId, title]
+      properties:
+        courseId:
+          type: integer
+          format: int64
+          description: ID of the course this offering belongs to
+          example: 1
+        teacherId:
+          type: integer
+          format: int64
+          description: ID of the teacher conducting this offering
+          example: 1
+        title:
+          type: string
+          description: Title of this offering/batch
+          example: "Saturday Batch"
+        description:
+          type: string
+          description: Optional description
+          example: "8-week Saturday morning batch for beginners"
+
+    AddSessionsRequest:
+      type: object
+      required: [timezone, sessions]
+      properties:
+        timezone:
+          type: string
+          description: |
+            IANA timezone of the teacher when submitting these times.
+            The backend converts to UTC before persisting.
+          example: "Asia/Kolkata"
+        sessions:
+          type: array
+          minItems: 1
+          description: List of sessions to add
+          items:
+            $ref: '#/components/schemas/SessionInput'
+
+    SessionInput:
+      type: object
+      required: [startTime, endTime]
+      properties:
+        startTime:
+          type: string
+          description: |
+            Local datetime string in ISO-8601 format (no timezone suffix).
+            Interpreted in the `timezone` field of the parent request.
+          example: "2025-06-07T18:00:00"
+        endTime:
+          type: string
+          description: Local datetime string in ISO-8601 format
+          example: "2025-06-07T19:00:00"
+        sequenceNo:
+          type: integer
+          description: Optional ordering number (Week 1, Week 2, etc.)
+          example: 1
+
+    BookOfferingRequest:
+      type: object
+      required: [parentId, offeringId]
+      properties:
+        parentId:
+          type: integer
+          format: int64
+          description: ID of the parent making the booking
+          example: 1
+        offeringId:
+          type: integer
+          format: int64
+          description: ID of the offering to book
+          example: 1
+
+    # ── Response schemas ───────────────────────────────────────────────────────
+    Course:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        title:
+          type: string
+          example: "Minecraft Coding"
+        description:
+          type: string
+          example: "Learn Java programming through Minecraft modding"
+
+    Teacher:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: "Ravi Kumar"
+        email:
+          type: string
+          example: "ravi@undoschool.com"
+        timezone:
+          type: string
+          example: "Asia/Kolkata"
+
+    Parent:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: "John Smith"
+        email:
+          type: string
+          example: "john@example.com"
+        timezone:
+          type: string
+          example: "America/New_York"
+
+    SessionResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        sequenceNo:
+          type: integer
+          description: Ordering number for this session
+          example: 1
+        startTime:
+          type: string
+          description: |
+            Session start time in ISO-8601 offset format,
+            converted to the viewer's local timezone.
+          example: "2025-06-07T08:30:00-04:00"
+        endTime:
+          type: string
+          description: Session end time in ISO-8601 offset format
+          example: "2025-06-07T09:30:00-04:00"
+
+    OfferingResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        courseId:
+          type: integer
+          format: int64
+          example: 1
+        courseTitle:
+          type: string
+          example: "Minecraft Coding"
+        teacherId:
+          type: integer
+          format: int64
+          example: 1
+        teacherName:
+          type: string
+          example: "Ravi Kumar"
+        title:
+          type: string
+          example: "Saturday Batch"
+        description:
+          type: string
+          example: "8-week Saturday morning batch"
+        status:
+          type: string
+          enum: [DRAFT, ACTIVE, CANCELLED]
+          example: "ACTIVE"
+        sessions:
+          type: array
+          description: Sessions with times in the viewer's local timezone
+          items:
+            $ref: '#/components/schemas/SessionResponse'
+
+    BookingResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        parentId:
+          type: integer
+          format: int64
+          example: 1
+        offeringId:
+          type: integer
+          format: int64
+          example: 1
+        offeringTitle:
+          type: string
+          example: "Saturday Batch"
+        status:
+          type: string
+          enum: [CONFIRMED, CANCELLED]
+          example: "CONFIRMED"
+        bookedAt:
+          type: string
+          description: Booking timestamp in parent's local timezone
+          example: "2025-06-01T08:30:00-04:00"
+        sessions:
+          type: array
+          description: All sessions of the booked offering in parent's local timezone
+          items:
+            $ref: '#/components/schemas/SessionResponse'
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          description: HTTP status code
+          example: 404
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Resource not found"
+        details:
+          description: Additional error details (e.g. validation field errors)
+          nullable: true
+          example: null
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC timestamp of when the error occurred
+          example: "2025-06-07T12:30:00Z"
+
+  # ── Reusable responses ───────────────────────────────────────────────────────
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: 400
+            message: "Validation failed"
+            details:
+              parentId: "parentId is required"
+              offeringId: "offeringId is required"
+            timestamp: "2025-06-07T12:30:00Z"
+
+    NotFound:
+      description: Requested resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: 404
+            message: "Parent not found: 99"
+            details: null
+            timestamp: "2025-06-07T12:30:00Z"
